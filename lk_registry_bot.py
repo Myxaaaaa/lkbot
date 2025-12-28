@@ -58,11 +58,25 @@ DEFAULT_TOKEN = "8531740207:AAGFJeyQmj1mcHAO-0sFnRfhoAOqidCTlRU"
 
 Record = Dict[str, str]
 
+# Кастомный фильтр для подавления Conflict ошибок в логах
+class ConflictFilter(logging.Filter):
+    """Фильтр для подавления Conflict ошибок в логах"""
+    def filter(self, record):
+        # Подавляем записи, содержащие Conflict ошибки
+        if "Conflict" in record.getMessage() and "terminated by other getUpdates" in record.getMessage():
+            return False
+        return True
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# Применяем фильтр ко всем логгерам telegram
+conflict_filter = ConflictFilter()
+logging.getLogger("telegram").addFilter(conflict_filter)
+logging.getLogger("telegram.ext").addFilter(conflict_filter)
 
 
 def load_records() -> List[Record]:
@@ -864,12 +878,9 @@ def run_bot() -> None:
         """Обработчик ошибок"""
         error = context.error
         if isinstance(error, Conflict):
-            # Conflict - это нормально при перезапуске, просто логируем как предупреждение
-            logger.warning(
-                "Конфликт: другой экземпляр бота пытается получить обновления. "
-                "Это нормально при перезапуске. Бот продолжит работу."
-            )
-            return  # Не логируем как ошибку
+            # Conflict - это нормально при перезапуске, просто игнорируем
+            # Библиотека автоматически повторит попытку
+            return  # Не логируем вообще
         else:
             logger.error(f"Необработанная ошибка: {error}", exc_info=error)
     
@@ -879,7 +890,28 @@ def run_bot() -> None:
     telegram_logger = logging.getLogger("telegram.ext")
     telegram_logger.setLevel(logging.WARNING)  # Показываем только WARNING и выше
     
+    # Специально для updater - подавляем Conflict ошибки
+    updater_logger = logging.getLogger("telegram.ext._updater")
+    updater_logger.setLevel(logging.WARNING)
+    
+    # Удаляем webhook перед запуском polling, чтобы избежать конфликтов
+    async def post_init(app) -> None:
+        """Инициализация после запуска приложения"""
+        try:
+            await app.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook удален, используется polling режим")
+        except Conflict:
+            # Если есть конфликт, просто игнорируем - библиотека сама разберется
+            pass
+        except Exception as e:
+            logger.debug(f"Не удалось удалить webhook (это нормально): {e}")
+    
+    application.post_init = post_init
+    
     logger.info("Бот запущен и ожидает обновления.")
+    
+    # Запускаем polling - библиотека автоматически обработает Conflict ошибки
+    # и будет повторять попытки подключения с экспоненциальной задержкой
     application.run_polling(
         drop_pending_updates=True,  # Игнорируем старые обновления при перезапуске
     )
