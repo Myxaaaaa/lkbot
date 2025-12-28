@@ -28,9 +28,11 @@
 ### 3. Настройка переменных окружения
 
 1. В проекте Railway откройте вкладку **"Variables"**
-2. Добавьте переменную:
+2. Добавьте переменные:
    - **Name:** `BOT_TOKEN`
-   - **Value:** ваш токен бота (получите у @BotFather в Telegram)
+     **Value:** ваш токен бота (получите у @BotFather в Telegram)
+   - **Name:** `PYTHONWARNINGS` (опционально, для подавления предупреждений)
+     **Value:** `ignore::UserWarning:telegram.ext._conversationhandler`
 
 ### 4. Запуск
 
