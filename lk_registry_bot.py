@@ -62,8 +62,15 @@ Record = Dict[str, str]
 class ConflictFilter(logging.Filter):
     """Фильтр для подавления Conflict ошибок в логах"""
     def filter(self, record):
-        # Подавляем записи, содержащие Conflict ошибки
-        if "Conflict" in record.getMessage() and "terminated by other getUpdates" in record.getMessage():
+        message = record.getMessage()
+        # Подавляем все записи, связанные с Conflict ошибками
+        conflict_keywords = [
+            "Conflict",
+            "terminated by other getUpdates",
+            "другой экземпляр бота",
+            "Конфликт: другой экземпляр",
+        ]
+        if any(keyword in message for keyword in conflict_keywords):
             return False
         return True
 
@@ -73,10 +80,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Применяем фильтр ко всем логгерам telegram
+# Применяем фильтр ко всем логгерам (включая __main__)
 conflict_filter = ConflictFilter()
-logging.getLogger("telegram").addFilter(conflict_filter)
-logging.getLogger("telegram.ext").addFilter(conflict_filter)
+# Применяем к root logger, чтобы перехватить все сообщения
+root_logger = logging.getLogger()
+root_logger.addFilter(conflict_filter)
 
 
 def load_records() -> List[Record]:
@@ -880,19 +888,20 @@ def run_bot() -> None:
         if isinstance(error, Conflict):
             # Conflict - это нормально при перезапуске, просто игнорируем
             # Библиотека автоматически повторит попытку
-            return  # Не логируем вообще
+            # Не логируем вообще - фильтр уже подавит все связанные сообщения
+            return
         else:
             logger.error(f"Необработанная ошибка: {error}", exc_info=error)
     
     application.add_error_handler(error_handler)
     
-    # Настраиваем логирование для telegram.ext, чтобы не показывать Conflict как ошибку
+    # Настраиваем логирование для telegram.ext, чтобы не показывать ERROR от updater
     telegram_logger = logging.getLogger("telegram.ext")
     telegram_logger.setLevel(logging.WARNING)  # Показываем только WARNING и выше
     
-    # Специально для updater - подавляем Conflict ошибки
+    # Специально для updater - устанавливаем уровень ERROR, чтобы не показывать Conflict ошибки
     updater_logger = logging.getLogger("telegram.ext._updater")
-    updater_logger.setLevel(logging.WARNING)
+    updater_logger.setLevel(logging.CRITICAL)  # Показываем только CRITICAL
     
     # Удаляем webhook перед запуском polling, чтобы избежать конфликтов
     async def post_init(app) -> None:
