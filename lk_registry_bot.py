@@ -57,8 +57,11 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings(
     "ignore",
     message=".*per_message=False.*CallbackQueryHandler.*",
-    category=UserWarning,
-    module="telegram",
+)
+warnings.filterwarnings(
+    "ignore",
+    message=".*per_message=False.*",
+    module="telegram.ext._conversationhandler",
 )
 
 
