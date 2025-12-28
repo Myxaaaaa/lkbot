@@ -69,6 +69,8 @@ class ConflictFilter(logging.Filter):
             "terminated by other getUpdates",
             "другой экземпляр бота",
             "Конфликт: другой экземпляр",
+            "Error while getting Updates",  # Сообщение от updater при конфликте
+            "make sure that only one bot instance is running",
         ]
         if any(keyword in message for keyword in conflict_keywords):
             return False
@@ -899,9 +901,10 @@ def run_bot() -> None:
     telegram_logger = logging.getLogger("telegram.ext")
     telegram_logger.setLevel(logging.WARNING)  # Показываем только WARNING и выше
     
-    # Специально для updater - устанавливаем уровень ERROR, чтобы не показывать Conflict ошибки
+    # Специально для updater - устанавливаем уровень CRITICAL и применяем фильтр
     updater_logger = logging.getLogger("telegram.ext._updater")
     updater_logger.setLevel(logging.CRITICAL)  # Показываем только CRITICAL
+    updater_logger.addFilter(conflict_filter)  # Применяем фильтр напрямую к updater
     
     # Удаляем webhook перед запуском polling, чтобы избежать конфликтов
     async def post_init(app) -> None:
