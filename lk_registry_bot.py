@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import warnings
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
 
@@ -49,6 +50,13 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+# Подавляем предупреждение о per_message=False с CallbackQueryHandler
+# Это нормальное поведение для нашего случая, где используются и MessageHandler и CallbackQueryHandler
+warnings.filterwarnings(
+    "ignore",
+    message=".*per_message=False.*CallbackQueryHandler.*",
+)
 
 
 def load_records() -> List[Record]:
