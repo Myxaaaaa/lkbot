@@ -794,6 +794,7 @@ def run_bot() -> None:
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         name="add_lk",
+        per_message=False,
     )
 
     filter_conversation = ConversationHandler(
@@ -810,6 +811,7 @@ def run_bot() -> None:
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         name="filters",
+        per_message=False,
     )
 
     edit_status_conversation = ConversationHandler(
@@ -824,6 +826,7 @@ def run_bot() -> None:
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         name="edit_status",
+        per_message=False,
     )
 
     application.add_handler(CommandHandler("start", start))
