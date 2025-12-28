@@ -901,10 +901,16 @@ def run_bot() -> None:
     telegram_logger = logging.getLogger("telegram.ext")
     telegram_logger.setLevel(logging.WARNING)  # Показываем только WARNING и выше
     
-    # Специально для updater - устанавливаем уровень CRITICAL и применяем фильтр
-    updater_logger = logging.getLogger("telegram.ext._updater")
-    updater_logger.setLevel(logging.CRITICAL)  # Показываем только CRITICAL
-    updater_logger.addFilter(conflict_filter)  # Применяем фильтр напрямую к updater
+    # Специально для updater - блокируем все ERROR сообщения
+    # Пробуем разные варианты имени логгера
+    for logger_name in ["telegram.ext._updater", "telegram.ext.Updater", "telegram.ext.updater"]:
+        updater_logger = logging.getLogger(logger_name)
+        updater_logger.setLevel(100)  # Устанавливаем уровень выше CRITICAL (50), фактически отключаем
+        updater_logger.addFilter(conflict_filter)  # Применяем фильтр напрямую к updater
+    
+    # Также применяем фильтр к родительскому логгеру
+    telegram_ext_logger = logging.getLogger("telegram.ext")
+    telegram_ext_logger.addFilter(conflict_filter)
     
     # Удаляем webhook перед запуском polling, чтобы избежать конфликтов
     async def post_init(app) -> None:
