@@ -7,6 +7,18 @@ import warnings
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
 
+# Подавляем предупреждение о per_message=False с CallbackQueryHandler
+# Должно быть ДО импорта telegram, чтобы фильтр успел примениться
+warnings.filterwarnings(
+    "ignore",
+    message=".*per_message=False.*CallbackQueryHandler.*",
+)
+warnings.filterwarnings(
+    "ignore",
+    message=".*per_message=False.*",
+    module="telegram.ext._conversationhandler",
+)
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -51,18 +63,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-
-# Подавляем предупреждение о per_message=False с CallbackQueryHandler
-# Это нормальное поведение для нашего случая, где используются и MessageHandler и CallbackQueryHandler
-warnings.filterwarnings(
-    "ignore",
-    message=".*per_message=False.*CallbackQueryHandler.*",
-)
-warnings.filterwarnings(
-    "ignore",
-    message=".*per_message=False.*",
-    module="telegram.ext._conversationhandler",
-)
 
 
 def load_records() -> List[Record]:
@@ -859,31 +859,30 @@ def run_bot() -> None:
     application.add_handler(CallbackQueryHandler(delete_record_callback, pattern="^DELETE_\\d+$"))
     application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^BACK_MENU$"))
 
-    # Обработка ошибки Conflict (когда бот запущен в нескольких местах)
+    # Обработка ошибок
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработчик ошибок"""
         error = context.error
         if isinstance(error, Conflict):
+            # Conflict - это нормально при перезапуске, просто логируем как предупреждение
             logger.warning(
-                "Конфликт: другой экземпляр бота уже запущен. "
-                "Убедитесь, что бот запущен только в одном месте."
+                "Конфликт: другой экземпляр бота пытается получить обновления. "
+                "Это нормально при перезапуске. Бот продолжит работу."
             )
+            return  # Не логируем как ошибку
         else:
             logger.error(f"Необработанная ошибка: {error}", exc_info=error)
     
     application.add_error_handler(error_handler)
     
+    # Настраиваем логирование для telegram.ext, чтобы не показывать Conflict как ошибку
+    telegram_logger = logging.getLogger("telegram.ext")
+    telegram_logger.setLevel(logging.WARNING)  # Показываем только WARNING и выше
+    
     logger.info("Бот запущен и ожидает обновления.")
-    try:
-        application.run_polling(
-            drop_pending_updates=True,  # Игнорируем старые обновления при перезапуске
-        )
-    except Conflict:
-        logger.error(
-            "Критическая ошибка: бот уже запущен в другом месте. "
-            "Остановите другие экземпляры бота."
-        )
-        raise
+    application.run_polling(
+        drop_pending_updates=True,  # Игнорируем старые обновления при перезапуске
+    )
 
 
 if __name__ == "__main__":
