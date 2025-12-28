@@ -17,6 +17,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.error import Conflict
 
 DATA_FILE = Path(__file__).with_name("lk_registry.json")
 STATUSES = [
@@ -56,6 +57,8 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings(
     "ignore",
     message=".*per_message=False.*CallbackQueryHandler.*",
+    category=UserWarning,
+    module="telegram",
 )
 
 
@@ -853,8 +856,31 @@ def run_bot() -> None:
     application.add_handler(CallbackQueryHandler(delete_record_callback, pattern="^DELETE_\\d+$"))
     application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^BACK_MENU$"))
 
+    # Обработка ошибки Conflict (когда бот запущен в нескольких местах)
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Обработчик ошибок"""
+        error = context.error
+        if isinstance(error, Conflict):
+            logger.warning(
+                "Конфликт: другой экземпляр бота уже запущен. "
+                "Убедитесь, что бот запущен только в одном месте."
+            )
+        else:
+            logger.error(f"Необработанная ошибка: {error}", exc_info=error)
+    
+    application.add_error_handler(error_handler)
+    
     logger.info("Бот запущен и ожидает обновления.")
-    application.run_polling()
+    try:
+        application.run_polling(
+            drop_pending_updates=True,  # Игнорируем старые обновления при перезапуске
+        )
+    except Conflict:
+        logger.error(
+            "Критическая ошибка: бот уже запущен в другом месте. "
+            "Остановите другие экземпляры бота."
+        )
+        raise
 
 
 if __name__ == "__main__":
