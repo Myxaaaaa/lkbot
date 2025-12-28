@@ -42,7 +42,7 @@ STATUSES = [
 ]
 STATUS_REQUIRING_FUNDS = {"Вылет", "заблокирован"}
 MAX_BUTTONS_PER_MESSAGE = 25
-DEFAULT_TOKEN = "8531740207:AAGFJeyQmj1mcHAO-0sFnRfhoAOqidCTlRU"
+DEFAULT_TOKEN = "8590490166:AAHMno1uXBcs-yY-RdOH2k-tnjiY2A3L69A"
 
 (
     ADD_BANK,
@@ -84,9 +84,35 @@ logger = logging.getLogger(__name__)
 
 # Применяем фильтр ко всем логгерам (включая __main__)
 conflict_filter = ConflictFilter()
-# Применяем к root logger, чтобы перехватить все сообщения
+
+# Применяем фильтр к root logger и всем его handlers
 root_logger = logging.getLogger()
 root_logger.addFilter(conflict_filter)
+# Применяем фильтр ко всем существующим handlers
+for handler in root_logger.handlers:
+    handler.addFilter(conflict_filter)
+
+# Настраиваем логирование для telegram ДО создания application
+telegram_logger = logging.getLogger("telegram")
+telegram_logger.setLevel(logging.WARNING)
+telegram_logger.addFilter(conflict_filter)
+for handler in telegram_logger.handlers:
+    handler.addFilter(conflict_filter)
+
+telegram_ext_logger = logging.getLogger("telegram.ext")
+telegram_ext_logger.setLevel(logging.WARNING)
+telegram_ext_logger.addFilter(conflict_filter)
+for handler in telegram_ext_logger.handlers:
+    handler.addFilter(conflict_filter)
+
+# Блокируем updater полностью
+for logger_name in ["telegram.ext._updater", "telegram.ext.Updater", "telegram.ext.updater"]:
+    updater_logger = logging.getLogger(logger_name)
+    updater_logger.setLevel(100)  # Выше CRITICAL
+    updater_logger.addFilter(conflict_filter)
+    updater_logger.propagate = False  # Не передаем логи родителю
+    for handler in updater_logger.handlers:
+        handler.addFilter(conflict_filter)
 
 
 def load_records() -> List[Record]:
@@ -896,21 +922,6 @@ def run_bot() -> None:
             logger.error(f"Необработанная ошибка: {error}", exc_info=error)
     
     application.add_error_handler(error_handler)
-    
-    # Настраиваем логирование для telegram.ext, чтобы не показывать ERROR от updater
-    telegram_logger = logging.getLogger("telegram.ext")
-    telegram_logger.setLevel(logging.WARNING)  # Показываем только WARNING и выше
-    
-    # Специально для updater - блокируем все ERROR сообщения
-    # Пробуем разные варианты имени логгера
-    for logger_name in ["telegram.ext._updater", "telegram.ext.Updater", "telegram.ext.updater"]:
-        updater_logger = logging.getLogger(logger_name)
-        updater_logger.setLevel(100)  # Устанавливаем уровень выше CRITICAL (50), фактически отключаем
-        updater_logger.addFilter(conflict_filter)  # Применяем фильтр напрямую к updater
-    
-    # Также применяем фильтр к родительскому логгеру
-    telegram_ext_logger = logging.getLogger("telegram.ext")
-    telegram_ext_logger.addFilter(conflict_filter)
     
     # Удаляем webhook перед запуском polling, чтобы избежать конфликтов
     async def post_init(app) -> None:
