@@ -5,6 +5,8 @@
 
 import json
 import re
+import csv
+import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -135,18 +137,34 @@ def parse_text_data(text_data: str) -> List[Dict[str, str]]:
             continue
         
         # Парсим данные (может быть 2-4 колонки)
+        # Структура: A=ФИО, B=Телефон, C=Карта (или статус), D=Статус
         full_name = parts[0].strip()
         phone = parts[1].strip() if len(parts) > 1 else ""
-        card = parts[2].strip() if len(parts) > 2 else ""
-        status = parts[3].strip() if len(parts) > 3 else "в работе"
+        card = ""
+        status = "в работе"
         
-        # Если статус пустой, но есть только 3 колонки, возможно статус в 3-й колонке
-        if not status and len(parts) == 3:
-            # Проверяем, является ли последняя колонка статусом
-            last_part = parts[2].lower()
-            if last_part in STATUS_MAPPING or any(s in last_part for s in ['отдых', 'блок', 'вылет', 'актив', 'дропа']):
-                status = parts[2]
+        # Определяем карту и статус
+        if len(parts) >= 4:
+            # Есть все 4 колонки: ФИО, Телефон, Карта, Статус
+            card = parts[2].strip()
+            status = parts[3].strip()
+        elif len(parts) == 3:
+            # Только 3 колонки: нужно определить, что в третьей - карта или статус
+            third_col = parts[2].strip().lower()
+            # Проверяем, является ли третья колонка статусом
+            if (third_col in STATUS_MAPPING or 
+                any(s in third_col for s in ['отдых', 'блок', 'вылет', 'актив', 'дропа', 'ждем', 'new'])):
+                status = parts[2].strip()
                 card = ""
+            else:
+                # Скорее всего это карта, статус по умолчанию
+                card = parts[2].strip()
+                status = "в работе"
+        elif len(parts) == 2:
+            # Только ФИО и телефон
+            phone = parts[1].strip()
+            card = ""
+            status = "в работе"
         
         # Нормализуем данные
         phone = normalize_phone(phone)
@@ -199,6 +217,23 @@ def generate_id(records: List[Dict[str, str]]) -> str:
     return str(max_id + 1)
 
 
+def clear_all_data() -> bool:
+    """
+    Очищает все данные в боте
+    
+    Returns:
+        True если успешно очищено, False в случае ошибки
+    """
+    try:
+        # Сохраняем пустой массив
+        DATA_FILE.write_text("[]", encoding='utf-8')
+        print("✅ Все данные в боте очищены")
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка при очистке данных: {e}")
+        return False
+
+
 def import_from_text(text_data: str, merge: bool = True) -> int:
     """
     Импортирует данные из текста
@@ -217,12 +252,16 @@ def import_from_text(text_data: str, merge: bool = True) -> int:
     existing_phones = {rec.get("phone", ""): rec for rec in existing_records}
     
     imported_count = 0
-    next_id = generate_id(existing_records)
+    # Если merge=False, начинаем с ID=1, иначе продолжаем с существующих
+    if merge:
+        next_id = generate_id(existing_records)
+    else:
+        next_id = "1"
     
     for record in new_records:
         phone = record.get("phone", "")
         
-        # Проверяем на дубликаты
+        # Проверяем на дубликаты (только если merge=True)
         if merge and phone and phone in existing_phones:
             try:
                 print(f"⚠ Пропущен дубликат: {record['full_name']} ({phone})")
@@ -236,10 +275,13 @@ def import_from_text(text_data: str, merge: bool = True) -> int:
         
         existing_records.append(record)
         imported_count += 1
-        try:
-            print(f"✅ Импортирован: {record['full_name']} (ID: {record['id']})")
-        except UnicodeEncodeError:
-            print(f"✅ Импортирован: {record['full_name'].encode('ascii', 'ignore').decode()} (ID: {record['id']})")
+        
+        # Выводим только каждую 10-ю запись, чтобы не засорять вывод
+        if imported_count % 10 == 0 or imported_count <= 5:
+            try:
+                print(f"✅ Импортирован: {record['full_name']} (ID: {record['id']})")
+            except UnicodeEncodeError:
+                print(f"✅ Импортирован: {record['full_name'].encode('ascii', 'ignore').decode()} (ID: {record['id']})")
     
     # Сохраняем
     DATA_FILE.write_text(
@@ -248,6 +290,75 @@ def import_from_text(text_data: str, merge: bool = True) -> int:
     )
     
     return imported_count
+
+
+def import_from_google_sheets_csv(sheet_id: str, gid: str = "0") -> int:
+    """
+    Импортирует данные из Google Sheets через CSV экспорт (публичный доступ)
+    
+    Args:
+        sheet_id: ID Google таблицы (из URL)
+        gid: ID листа (из URL, по умолчанию "0")
+    
+    Returns:
+        Количество импортированных записей
+    """
+    try:
+        # URL для экспорта CSV
+        csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+        
+        print(f"📥 Загрузка данных из Google Таблицы...")
+        print(f"🔗 URL: {csv_url}")
+        
+        # Загружаем CSV с обработкой ошибок
+        req = urllib.request.Request(csv_url)
+        req.add_header('User-Agent', 'Mozilla/5.0')
+        
+        with urllib.request.urlopen(req, timeout=30) as response:
+            csv_data = response.read().decode('utf-8')
+        
+        # Парсим CSV
+        csv_reader = csv.reader(csv_data.splitlines())
+        rows = list(csv_reader)
+        
+        if not rows:
+            print("❌ Таблица пуста")
+            return 0
+        
+        print(f"📊 Загружено строк из таблицы: {len(rows)}")
+        
+        # Пропускаем заголовок (первую строку) и конвертируем в текстовый формат
+        text_lines = []
+        for row_num, row in enumerate(rows[1:], start=2):  # Пропускаем заголовок, начинаем с 2
+            # Очищаем пустые строки
+            if not any(cell.strip() for cell in row):
+                continue
+            
+            # Берем первые 4 колонки (A, B, C, D) - ФИО, Телефон, Карта, Статус
+            row_data = row[:4] if len(row) >= 4 else row + [''] * (4 - len(row))
+            # Объединяем через табуляцию
+            text_lines.append('\t'.join(row_data))
+        
+        text_data = '\n'.join(text_lines)
+        print(f"📝 Обработано строк данных: {len(text_lines)}")
+        
+        # Импортируем (merge=False, чтобы заменить все данные)
+        return import_from_text(text_data, merge=False)
+        
+    except urllib.error.HTTPError as e:
+        print(f"❌ HTTP ошибка при загрузке данных: {e.code} - {e.reason}")
+        print("💡 Убедитесь, что таблица доступна публично")
+        print("💡 Или используйте метод с credentials (import_from_google_sheets)")
+        return 0
+    except urllib.error.URLError as e:
+        print(f"❌ Ошибка при загрузке данных из Google Таблицы: {e}")
+        print("💡 Проверьте подключение к интернету")
+        return 0
+    except Exception as e:
+        print(f"❌ Ошибка при импорте: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0
 
 
 def import_from_google_sheets(sheet_id: str, range_name: str = "A:D", credentials_file: Optional[str] = None) -> int:
@@ -318,28 +429,28 @@ if __name__ == "__main__":
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
     
-    # Пример использования с текстовыми данными
-    sample_data = """Болотов Алишер Болотович	755 202 976	4177 4901 5776 8559	у дропа
-Мамбеталиев Темирлан Толомушевич	755 117 823	4177 4901 2860 9775	у дропа
-Токтосунов Дастан Нурбекович	755 039 098	4177 4901 8629 0716	отдых"""
+    # ID Google Таблицы из URL
+    GOOGLE_SHEET_ID = "1frJ4DEvdmLSuIzdqXhewjQRXXsW4xavwnCUoS7WzBQM"
+    GOOGLE_SHEET_GID = "0"
     
-    print("📥 Импорт данных...")
-    print("=" * 50)
+    print("🔄 Очистка и импорт данных из Google Таблицы")
+    print("=" * 60)
     
-    # Читаем данные из файла или используем встроенные
-    data_file = Path(__file__).parent / "import_data.txt"
+    # Шаг 1: Очищаем все данные в боте
+    print("\n1️⃣ Очистка данных бота...")
+    if not clear_all_data():
+        print("❌ Не удалось очистить данные. Прерывание.")
+        sys.exit(1)
     
-    if data_file.exists():
-        print(f"📄 Чтение данных из {data_file}")
-        text_data = data_file.read_text(encoding='utf-8')
+    # Шаг 2: Импортируем данные из Google Таблицы
+    print("\n2️⃣ Импорт данных из Google Таблицы...")
+    imported = import_from_google_sheets_csv(GOOGLE_SHEET_ID, GOOGLE_SHEET_GID)
+    
+    print("\n" + "=" * 60)
+    if imported > 0:
+        print(f"✅ Успешно импортировано записей: {imported}")
+        print(f"📁 Данные сохранены в: {DATA_FILE}")
     else:
-        print("📝 Использование встроенных тестовых данных")
-        print("💡 Создайте файл import_data.txt с данными для импорта")
-        text_data = sample_data
-    
-    imported = import_from_text(text_data, merge=True)
-    
-    print("=" * 50)
-    print(f"✅ Импортировано записей: {imported}")
-    print(f"📁 Данные сохранены в: {DATA_FILE}")
+        print("❌ Не удалось импортировать данные")
+        print("💡 Проверьте доступность таблицы или используйте другой метод импорта")
 
