@@ -7,8 +7,6 @@ import warnings
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
 
-# Подавляем предупреждение о per_message=False с CallbackQueryHandler
-# Должно быть ДО импорта telegram, чтобы фильтр успел примениться
 warnings.filterwarnings(
     "ignore",
     message=".*per_message=False.*CallbackQueryHandler.*",
@@ -43,6 +41,9 @@ STATUSES = [
 STATUS_REQUIRING_FUNDS = {"Вылет", "заблокирован"}
 MAX_BUTTONS_PER_MESSAGE = 25
 DEFAULT_TOKEN = "8590490166:AAHMno1uXBcs-yY-RdOH2k-tnjiY2A3L69A"
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1frJ4DEvdmLSuIzdqXhewjQRXXsW4xavwnCUoS7WzBQM")
+GOOGLE_SHEET_GID = os.getenv("GOOGLE_SHEET_GID", "0")
+GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 
 (
     ADD_BANK,
@@ -58,18 +59,15 @@ DEFAULT_TOKEN = "8590490166:AAHMno1uXBcs-yY-RdOH2k-tnjiY2A3L69A"
 
 Record = Dict[str, str]
 
-# Кастомный фильтр для подавления Conflict ошибок в логах
 class ConflictFilter(logging.Filter):
-    """Фильтр для подавления Conflict ошибок в логах"""
     def filter(self, record):
         message = record.getMessage()
-        # Подавляем все записи, связанные с Conflict ошибками
         conflict_keywords = [
             "Conflict",
             "terminated by other getUpdates",
             "другой экземпляр бота",
             "Конфликт: другой экземпляр",
-            "Error while getting Updates",  # Сообщение от updater при конфликте
+            "Error while getting Updates",
             "make sure that only one bot instance is running",
         ]
         if any(keyword in message for keyword in conflict_keywords):
@@ -82,17 +80,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Применяем фильтр ко всем логгерам (включая __main__)
 conflict_filter = ConflictFilter()
 
-# Применяем фильтр к root logger и всем его handlers
 root_logger = logging.getLogger()
 root_logger.addFilter(conflict_filter)
-# Применяем фильтр ко всем существующим handlers
 for handler in root_logger.handlers:
     handler.addFilter(conflict_filter)
 
-# Настраиваем логирование для telegram ДО создания application
 telegram_logger = logging.getLogger("telegram")
 telegram_logger.setLevel(logging.WARNING)
 telegram_logger.addFilter(conflict_filter)
@@ -105,12 +99,11 @@ telegram_ext_logger.addFilter(conflict_filter)
 for handler in telegram_ext_logger.handlers:
     handler.addFilter(conflict_filter)
 
-# Блокируем updater полностью
 for logger_name in ["telegram.ext._updater", "telegram.ext.Updater", "telegram.ext.updater"]:
     updater_logger = logging.getLogger(logger_name)
-    updater_logger.setLevel(100)  # Выше CRITICAL
+    updater_logger.setLevel(100)
     updater_logger.addFilter(conflict_filter)
-    updater_logger.propagate = False  # Не передаем логи родителю
+    updater_logger.propagate = False
     for handler in updater_logger.handlers:
         handler.addFilter(conflict_filter)
 
@@ -129,6 +122,61 @@ def save_records(records: List[Record]) -> None:
     DATA_FILE.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def add_record_to_google_sheet(record: Record) -> bool:
+    """Добавляет запись в Google Таблицу"""
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        logger.debug("Библиотека google-api-python-client не установлена. Пропуск записи в таблицу.")
+        return False
+    
+    try:
+        credentials_path = Path(GOOGLE_CREDENTIALS_FILE)
+        if not credentials_path.exists():
+            logger.debug(f"Файл credentials не найден: {GOOGLE_CREDENTIALS_FILE}. Пропуск записи в таблицу.")
+            return False
+        
+        creds = service_account.Credentials.from_service_account_file(
+            str(credentials_path),
+            scopes=['https://www.googleapis.com/auth/spreadsheets']
+        )
+        
+        service = build('sheets', 'v4', credentials=creds)
+        
+        # Подготовка данных для записи
+        values = [[
+            record.get('full_name', ''),
+            record.get('phone', ''),
+            record.get('card', ''),
+            record.get('status', '')
+        ]]
+        
+        body = {
+            'values': values
+        }
+        
+        # Добавляем строку в конец таблицы
+        result = service.spreadsheets().values().append(
+            spreadsheetId=GOOGLE_SHEET_ID,
+            range='A:D',
+            valueInputOption='RAW',
+            insertDataOption='INSERT_ROWS',
+            body=body
+        ).execute()
+        
+        logger.info(f"Запись добавлена в Google Таблицу: {record.get('full_name', '')}")
+        return True
+        
+    except HttpError as error:
+        logger.error(f"Ошибка Google API при добавлении записи: {error}")
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении записи в Google Таблицу: {e}")
+        return False
+
+
 def generate_id(records: List[Record]) -> str:
     if not records:
         return "1"
@@ -137,7 +185,6 @@ def generate_id(records: List[Record]) -> str:
 
 
 def get_status_emoji(status: str) -> str:
-    """Возвращает эмодзи для статуса"""
     status_emojis = {
         "NEW-white": "🆕⚪",
         "NEW-not white": "🆕⚫",
@@ -150,7 +197,6 @@ def get_status_emoji(status: str) -> str:
 
 
 def format_record(record: Record) -> str:
-    """Форматирует запись с эмодзи и красивым оформлением"""
     status_emoji = get_status_emoji(record.get('status', ''))
     
     text = f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -191,7 +237,6 @@ def build_main_menu() -> InlineKeyboardMarkup:
 
 
 def build_status_keyboard(prefix: str) -> InlineKeyboardMarkup:
-    """Создает клавиатуру со статусами с эмодзи"""
     keyboard = []
     for idx, status in enumerate(STATUSES):
         emoji = get_status_emoji(status)
@@ -351,7 +396,6 @@ async def start_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.callback_query:
         await update.callback_query.answer()
     context.user_data["new_record"] = {}
-    # список ID служебных сообщений, которые нужно удалить после завершения ввода
     context.user_data["cleanup_messages"] = []
     msg = await update.effective_chat.send_message(
         "➕ <b>Добавление нового ЛК</b>\n\n"
@@ -504,8 +548,10 @@ async def finalize_record(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     record["id"] = generate_id(records)
     records.append(record)
     save_records(records)
+    
+    # Добавляем запись в Google Таблицу
+    add_record_to_google_sheet(record)
 
-    # Удаляем служебные сообщения диалога добавления
     cleanup_ids = context.user_data.pop("cleanup_messages", [])
     chat_id = update.effective_chat.id
     for mid in cleanup_ids:
@@ -514,7 +560,6 @@ async def finalize_record(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception:
             pass
 
-    # Итоговое сообщение с краткой инфой и кнопкой для просмотра всех ЛК
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
     keyboard = InlineKeyboardMarkup(
@@ -537,7 +582,6 @@ async def finalize_record(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("new_record", None)
     cleanup_ids = context.user_data.pop("cleanup_messages", [])
-    # Удаляем сообщение пользователя/кнопок, чтобы оставить только меню
     try:
         if update.callback_query:
             await update.callback_query.message.delete()
@@ -695,7 +739,6 @@ async def filter_status_selected(update: Update, context: ContextTypes.DEFAULT_T
 async def back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    # Удаляем сообщение с деталями ЛК и кнопками
     try:
         await query.message.delete()
     except Exception:
@@ -723,7 +766,6 @@ async def delete_record_callback(update: Update, context: ContextTypes.DEFAULT_T
         return
     save_records(new_records)
 
-    # Удаляем сообщение с ЛК
     try:
         await query.message.delete()
     except Exception:
@@ -834,8 +876,6 @@ async def edit_status_funds(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 def run_bot() -> None:
-    # Можно переопределить токен через переменную окружения BOT_TOKEN,
-    # иначе используется токен по умолчанию из константы.
     token = os.getenv("BOT_TOKEN") or DEFAULT_TOKEN
     if not token:
         raise RuntimeError("Не найден BOT_TOKEN в переменных окружения.")
@@ -909,28 +949,20 @@ def run_bot() -> None:
     application.add_handler(CallbackQueryHandler(delete_record_callback, pattern="^DELETE_\\d+$"))
     application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^BACK_MENU$"))
 
-    # Обработка ошибок
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Обработчик ошибок"""
         error = context.error
         if isinstance(error, Conflict):
-            # Conflict - это нормально при перезапуске, просто игнорируем
-            # Библиотека автоматически повторит попытку
-            # Не логируем вообще - фильтр уже подавит все связанные сообщения
             return
         else:
             logger.error(f"Необработанная ошибка: {error}", exc_info=error)
     
     application.add_error_handler(error_handler)
     
-    # Удаляем webhook перед запуском polling, чтобы избежать конфликтов
     async def post_init(app) -> None:
-        """Инициализация после запуска приложения"""
         try:
             await app.bot.delete_webhook(drop_pending_updates=True)
             logger.info("Webhook удален, используется polling режим")
         except Conflict:
-            # Если есть конфликт, просто игнорируем - библиотека сама разберется
             pass
         except Exception as e:
             logger.debug(f"Не удалось удалить webhook (это нормально): {e}")
@@ -939,10 +971,8 @@ def run_bot() -> None:
     
     logger.info("Бот запущен и ожидает обновления.")
     
-    # Запускаем polling - библиотека автоматически обработает Conflict ошибки
-    # и будет повторять попытки подключения с экспоненциальной задержкой
     application.run_polling(
-        drop_pending_updates=True,  # Игнорируем старые обновления при перезапуске
+        drop_pending_updates=True,
     )
 
 
